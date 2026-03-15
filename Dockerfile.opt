@@ -1,0 +1,56 @@
+# Multi-stage Dockerfile for minimal image
+
+# Build stage
+FROM golang:1.22-alpine AS builder
+
+# Install build dependencies
+RUN apk add --no-cache git make upx
+
+WORKDIR /build
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build with maximum optimizations
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -extldflags '-static'" \
+    -gcflags="-l=4 -B" \
+    -asmflags="-trimpath=/build" \
+    -trimpath \
+    -tags "netgo,osusergo,static_build" \
+    -o liteclaw .
+
+# Compress with UPX
+RUN upx --best --lzma liteclaw
+
+# Minimal runtime stage
+FROM scratch
+
+# Copy binary
+COPY --from=builder /build/liteclaw /liteclaw
+
+# Copy CA certificates for HTTPS
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+
+# Copy timezone data
+COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
+
+# Set environment
+ENV PATH=/ \
+    GODEBUG=madvdontneed=1 \
+    GOGC=100
+
+# Expose port
+EXPOSE 8080
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=1s --retries=3 \
+    CMD ["/liteclaw", "health"] || exit 1
+
+# Run
+ENTRYPOINT ["/liteclaw"]
+CMD ["server", "--host", "0.0.0.0", "--port", "8080"]

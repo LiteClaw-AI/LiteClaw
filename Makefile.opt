@@ -1,0 +1,189 @@
+# Optimized Makefile for LiteClaw Go
+
+# Binary name
+BINARY_NAME=liteclaw
+VERSION?=1.0.0
+BUILD_TIME=$(shell date -u '+%Y-%m-%d_%H:%M:%S')
+GIT_COMMIT=$(shell git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+
+# Go parameters
+GOCMD=go
+GOBUILD=$(GOCMD) build
+GOCLEAN=$(GOCMD) clean
+GOTEST=$(GOCMD) test
+GOMOD=$(GOCMD) mod
+
+# Optimization flags
+LDFLAGS=-ldflags "-s -w -X main.version=$(VERSION) \
+				  -X main.buildDate=$(BUILD_TIME) \
+				  -X main.commit=$(GIT_COMMIT) \
+				  -extldflags '-static'"
+
+# GCFLAGS for smaller binary
+GCFLAGS=-gcflags="-l=4 -B"
+ASMFLAGS=-asmflags="-trimpath=$(PWD)"
+
+# Build tags
+BUILDTAGS=-tags "netgo,osusergo,static_build"
+
+.PHONY: all build clean test install optimize
+
+all: clean deps build-optimize
+
+# Standard build
+build:
+	@echo "Building $(BINARY_NAME)..."
+	$(GOBUILD) $(LDFLAGS) -o bin/$(BINARY_NAME) .
+	@ls -lh bin/$(BINARY_NAME)
+
+# Optimized build
+build-optimize:
+	@echo "Building optimized $(BINARY_NAME)..."
+	CGO_ENABLED=0 $(GOBUILD) \
+		$(BUILDTAGS) \
+		$(LDFLAGS) \
+		$(GCFLAGS) \
+		$(ASMFLAGS) \
+		-trimpath \
+		-o bin/$(BINARY_NAME) .
+	@ls -lh bin/$(BINARY_NAME)
+	@echo "Binary size optimized!"
+
+# Ultra-optimized build with UPX
+build-ultra: build-optimize
+	@echo "Applying UPX compression..."
+	@which upx > /dev/null || (echo "Installing UPX..." && go install github.com/upx/upx@latest)
+	upx --best --lzma bin/$(BINARY_NAME) -o bin/$(BINARY_NAME)-ultra
+	@ls -lh bin/$(BINARY_NAME)-ultra
+	@echo "Ultra-optimized binary created!"
+
+# Build with all optimizations
+build-prod:
+	@echo "Building production-ready binary..."
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) \
+		$(BUILDTAGS) \
+		$(LDFLAGS) \
+		$(GCFLAGS) \
+		$(ASMFLAGS) \
+		-trimpath \
+		-ldflags "-s -w -linkmode external -extldflags '-static -s'" \
+		-o bin/$(BINARY_NAME)-prod .
+	@ls -lh bin/$(BINARY_NAME)-prod
+
+# Multi-platform optimized builds
+build-all-opt:
+	@echo "Building optimized binaries for all platforms..."
+	
+	# Linux AMD64
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GOBUILD) \
+		$(BUILDTAGS) $(LDFLAGS) $(GCFLAGS) $(ASMFLAGS) -trimpath \
+		-o bin/$(BINARY_NAME)-linux-amd64 .
+	
+	# Linux ARM64
+	CGO_ENABLED=0 GOOS=linux GOARCH=arm64 $(GOBUILD) \
+		$(BUILDTAGS) $(LDFLAGS) $(GCFLAGS) $(ASMFLAGS) -trimpath \
+		-o bin/$(BINARY_NAME)-linux-arm64 .
+	
+	# macOS AMD64
+	CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 $(GOBUILD) \
+		$(LDFLAGS) $(GCFLAGS) $(ASMFLAGS) -trimpath \
+		-o bin/$(BINARY_NAME)-darwin-amd64 .
+	
+	# macOS ARM64 (M1/M2)
+	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 $(GOBUILD) \
+		$(LDFLAGS) $(GCFLAGS) $(ASMFLAGS) -trimpath \
+		-o bin/$(BINARY_NAME)-darwin-arm64 .
+	
+	# Windows AMD64
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 $(GOBUILD) \
+		$(LDFLAGS) $(GCFLAGS) $(ASMFLAGS) -trimpath \
+		-o bin/$(BINARY_NAME)-windows-amd64.exe .
+	
+	@echo "All optimized builds complete:"
+	@ls -lh bin/
+
+# Analyze binary size
+analyze-size: build-optimize
+	@echo "\n=== Binary Size Analysis ==="
+	@ls -lh bin/$(BINARY_NAME)
+	@echo "\n=== Section Sizes ==="
+	@size bin/$(BINARY_NAME) 2>/dev/null || echo "size command not available"
+	@echo "\n=== Dependencies ==="
+	$(GOCMD) list -m all | head -20
+
+# Profile memory usage
+profile-memory:
+	@echo "Profiling memory usage..."
+	$(GOBUILD) -o bin/$(BINARY_NAME)-mem .
+	@echo "Running with GODEBUG=gctrace=1..."
+	GODEBUG=gctrace=1 ./bin/$(BINARY_NAME)-mem --help 2>&1 | head -50
+
+# Benchmark memory
+benchmark-memory:
+	@echo "Benchmarking memory..."
+	$(GOTEST) -bench=. -benchmem -run=^$ ./pkg/...
+	@echo "\n=== Memory Stats ==="
+	$(GOCMD) run -tags memorytest examples/memory_profile.go
+
+# Clean
+clean:
+	@echo "Cleaning..."
+	$(GOCLEAN)
+	rm -rf bin/
+	find . -name "*.prof" -delete
+	find . -name "coverage.out" -delete
+
+# Test with memory check
+test-memory:
+	@echo "Running tests with memory checks..."
+	$(GOTEST) -v -race -memprofile=mem.prof ./...
+	$(GOCMD) tool pprof -top mem.prof
+
+# Install optimized
+install-opt: build-optimize
+	@echo "Installing optimized binary..."
+	cp bin/$(BINARY_NAME) /usr/local/bin/
+	@echo "Installed to /usr/local/bin/$(BINARY_NAME)"
+
+# Docker optimized build
+docker-opt:
+	@echo "Building optimized Docker image..."
+	docker build -f Dockerfile.opt -t liteclaw:optimized .
+
+# Compare with Rust version
+compare:
+	@echo "=== Size Comparison ==="
+	@echo "Go optimized:"
+	@ls -lh bin/$(BINARY_NAME) 2>/dev/null || echo "Run 'make build-optimize' first"
+	@echo "\nRust version:"
+	@ls -lh ../liteclaw/target/release/liteclaw 2>/dev/null || echo "Build Rust version first"
+	@echo "\n=== Memory Comparison ==="
+	@echo "Run both binaries and compare with 'ps aux | grep liteclaw'"
+
+# Help
+help:
+	@echo "LiteClaw Go - Optimization Targets"
+	@echo ""
+	@echo "Build targets:"
+	@echo "  build              - Standard build"
+	@echo "  build-optimize     - Optimized build (smaller binary)"
+	@echo "  build-ultra        - Ultra-optimized with UPX compression"
+	@echo "  build-prod         - Production build with static linking"
+	@echo "  build-all-opt      - Multi-platform optimized builds"
+	@echo ""
+	@echo "Analysis targets:"
+	@echo "  analyze-size       - Analyze binary size"
+	@echo "  profile-memory     - Profile memory usage"
+	@echo "  benchmark-memory   - Benchmark memory allocation"
+	@echo "  compare            - Compare with Rust version"
+	@echo ""
+	@echo "Other targets:"
+	@echo "  clean              - Clean build artifacts"
+	@echo "  test-memory        - Test with memory profiling"
+	@echo "  install-opt        - Install optimized binary"
+	@echo "  docker-opt         - Build optimized Docker image"
+
+# Dependencies
+deps:
+	$(GOMOD) download
+	$(GOMOD) tidy
